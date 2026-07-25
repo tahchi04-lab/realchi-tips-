@@ -1,0 +1,194 @@
+      <div style="background:var(--card);border:1px solid ${p.section==='VIP'?'rgba(255,215,0,0.4)':'rgba(0,200,83,0.3)'};border-radius:12px;padding:16px;margin-bottom:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <span style="font-size:11px;color:var(--muted);background:var(--card2);padding:3px 8px;border-radius:20px;">${p.league}</span>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <span style="font-size:12px;color:var(--gold);">${p.time} WAT</span>
+            <span style="${p.section==='VIP'?'background:rgba(255,215,0,0.15);color:var(--gold);border:1px solid rgba(255,215,0,0.3)':'background:var(--card2);color:var(--muted)'};font-size:11px;padding:2px 8px;border-radius:20px;">${p.section}</span>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <span style="font-family:'Oswald',sans-serif;font-size:16px;">${p.home}</span>
+          <span style="font-size:11px;color:var(--muted);background:var(--card2);padding:3px 8px;border-radius:6px;">VS</span>
+          <span style="font-family:'Oswald',sans-serif;font-size:16px;">${p.away}</span>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+          <span style="background:rgba(0,200,83,0.15);color:var(--green);border:1px solid rgba(0,200,83,0.4);font-size:13px;font-weight:600;padding:4px 12px;border-radius:6px;">${p.tip}</span>
+          <span style="background:var(--card2);color:var(--gold);font-size:12px;font-weight:600;padding:4px 10px;border-radius:6px;">Odds: ${p.odds}</span>
+          <span style="font-size:12px;color:var(--muted);">Confidence: <span style="color:var(--green);font-weight:600;">${p.confidence}%</span></span>
+        </div>
+        <div style="font-size:12px;color:#888;line-height:1.5;">📊 ${p.analysis}</div>
+      </div>`).join('');
+
+    output.style.display = 'block';
+    btn.textContent = '🤖 Generate Again';
+    btn.disabled = false;
+  }).catch(e => {
+    btn.textContent = '🤖 Generate Predictions';
+    btn.disabled = false;
+    showToast('❌ Failed. Try again.', true);
+  });
+}
+
+async function saveAIPredictions() {
+  if (!aiGeneratedPredictions.length) return;
+  const total = aiGeneratedPredictions.length;
+  try {
+    for (const p of aiGeneratedPredictions) {
+      await db('predictions', 'POST', {
+        home: p.home, away: p.away, league: p.league,
+        time: p.time, tip: p.tip, section: p.section,
+        odds: p.odds, confidence: p.confidence, analysis: p.analysis
+      });
+    }
+    aiGeneratedPredictions = [];
+    await loadPredictions();
+    document.getElementById('ai-output').style.display = 'none';
+    showToast('✅ ' + total + ' predictions saved to database!');
+    document.querySelectorAll('.admin-tab')[0].click();
+  } catch(e) {
+    showToast('❌ Failed to save predictions', true);
+  }
+}
+
+// ===== REAL FOOTBALL API =====
+const RAPID_KEY = '2c24452602msh6b8b323a568625fp10f3cejsnc6b3a2793f9f';
+const RAPID_HOST = 'free-api-live-football-data.p.rapidapi.com';
+
+async function fetchTodayFixtures(league) {
+  const today = new Date().toISOString().split('T')[0];
+
+  const leagueIds = {
+    'Premier League': 39, 'La Liga': 140, 'Bundesliga': 78,
+    'Serie A': 135, 'Ligue 1': 61, 'Champions League': 2,
+    'AFCON': 6, 'Friendly Matches': 667
+  };
+
+  try {
+    let url;
+    if (league === 'Mixed Top Leagues') {
+      // Get ALL matches today
+      url = `https://free-api-live-football-data.p.rapidapi.com/football-get-matches-by-date?date=${today}`;
+    } else if (league === 'Friendly Matches') {
+      url = `https://free-api-live-football-data.p.rapidapi.com/football-get-matches-by-date?date=${today}&leagueId=667`;
+    } else {
+      const id = leagueIds[league] || 39;
+      url = `https://free-api-live-football-data.p.rapidapi.com/football-get-matches-by-date?date=${today}&leagueId=${id}`;
+    }
+
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'x-rapidapi-key': RAPID_KEY,
+        'x-rapidapi-host': RAPID_HOST
+      }
+    });
+
+    const data = await res.json();
+    console.log('API Response:', JSON.stringify(data).slice(0, 500));
+
+    // Try all possible response formats
+    let matches = data?.response || data?.matches || data?.data || data?.fixtures || data?.result || [];
+
+    if (!Array.isArray(matches)) matches = Object.values(matches || {});
+
+    // Normalize match format
+    return matches.map(m => ({
+      home: m?.home?.name || m?.homeTeam?.name || m?.teams?.home?.name || m?.home || m?.localTeam?.data?.name || '',
+      away: m?.away?.name || m?.awayTeam?.name || m?.teams?.away?.name || m?.away || m?.visitorTeam?.data?.name || '',
+      time: m?.time || m?.kickoff || m?.fixture?.date?.split('T')[1]?.slice(0,5) || m?.match_time || '20:00',
+      league: m?.league?.name || m?.competition?.name || league
+    })).filter(m => m.home && m.away);
+
+  } catch(e) {
+    console.error('API fetch failed:', e);
+    return [];
+  }
+}
+let aiGeneratedNews = [];
+
+const newsTemplates = [
+  (h, a, league) => ({ icon:'📰', page:'home', title:`${h} vs ${a} — Match Preview`, desc:`${h} host ${a} in what promises to be an exciting ${league} clash tonight. Both teams are in good form and this match could be crucial in the title race. RealChi Tips has all your predictions covered.`, time:'Just now' }),
+  (h, a, league) => ({ icon:'⚠️', page:'home', title:`Injury Update: Key player doubtful for ${h}`, desc:`${h} have received a blow ahead of their clash with ${a} with a key midfielder nursing a knock from training. The manager is expected to make a late decision on his fitness before kickoff.`, time:'1 hour ago' }),
+  (h, a, league) => ({ icon:'🏆', page:'home', title:`${league} Round-Up — Latest Standings`, desc:`The ${league} title race is heating up as we enter the business end of the season. Tonight's fixture between ${h} and ${a} could shake up the top of the table significantly.`, time:'2 hours ago' }),
+  (h, a, league) => ({ icon:'⚽', page:'home', title:`${a} Manager Speaks Ahead of ${h} Clash`, desc:`The ${a} manager has spoken confidently about his team's chances against ${h} tonight, saying "We are ready and focused." The visitors have been in impressive form away from home recently.`, time:'3 hours ago' }),
+  (h, a, league) => ({ icon:'📊', page:'free', title:`${h} vs ${a} — Head-to-Head Analysis`, desc:`Our expert analysts have broken down the last 10 meetings between ${h} and ${a}. The home side has the edge historically but ${a}'s recent form suggests this could be different.`, time:'Analysis by Chi Expert' }),
+  (h, a, league) => ({ icon:'🔍', page:'free', title:`Tactical Preview: ${h} vs ${a}`, desc:`${h} are expected to play a high press game while ${a} prefer a counter-attacking style. This tactical battle could be the key to unlocking tonight's ${league} fixture. Over 2.5 goals is our value bet.`, time:'Analysis by Chi Expert' }),
+  (h, a, league) => ({ icon:'💡', page:'free', title:`${league} Betting Tips & Value Picks`, desc:`RealChi Tips experts have identified several value bets in tonight's ${league} action. Both Teams to Score is particularly strong value given the recent form of both ${h} and ${a} going forward.`, time:'Analysis by Chi Expert' }),
+  (h, a, league) => ({ icon:'🌟', page:'home', title:`Star Player to Watch: ${h} vs ${a}`, desc:`All eyes will be on the key forwards in tonight's ${league} clash. Both ${h} and ${a} have exciting attackers who could be the difference makers in what promises to be an open and entertaining game.`, time:'30 minutes ago' }),
+];
+
+function aiGenerateNews() {
+  const league = document.getElementById('ai-league').value;
+  const btn = document.getElementById('ai-news-btn');
+  const output = document.getElementById('ai-news-output');
+  const preview = document.getElementById('ai-news-preview');
+
+  btn.textContent = '⏳ Generating...';
+  btn.disabled = true;
+
+  setTimeout(() => {
+    const teams = teamsByLeague[league] || teamsByLeague['Mixed Top Leagues'];
+    const [home, away] = teams[Math.floor(Math.random() * teams.length)];
+    const leagueLabel = getLeagueEmoji(league);
+
+    const shuffled = [...newsTemplates].sort(() => Math.random() - 0.5);
+    aiGeneratedNews = shuffled.slice(0, 5).map(fn => fn(home, away, leagueLabel));
+
+    preview.innerHTML = aiGeneratedNews.map(n => `
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:10px;display:flex;gap:12px;align-items:flex-start;">
+        <div style="font-size:22px;width:44px;height:44px;background:var(--card2);border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0;">${n.icon}</div>
+        <div style="flex:1;">
+          <div style="font-size:10px;color:${n.page==='home'?'var(--green)':'var(--gold)'};text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">${n.page==='home'?'🏠 Home Page':'⚽ Free Tips Page'}</div>
+          <div style="font-weight:600;font-size:14px;margin-bottom:4px;">${n.title}</div>
+          <div style="font-size:12px;color:var(--muted);line-height:1.5;">${n.desc}</div>
+          <div style="font-size:11px;color:var(--green);margin-top:6px;">${n.time}</div>
+        </div>
+      </div>`).join('');
+
+    output.style.display = 'block';
+    btn.textContent = '📰 Generate News';
+    btn.disabled = false;
+    showToast('✅ ' + aiGeneratedNews.length + ' news items generated!');
+  }, 1200);
+}
+
+async function saveAINews() {
+  if (!aiGeneratedNews.length) return;
+  const total = aiGeneratedNews.length;
+  try {
+    for (const n of aiGeneratedNews) {
+      await db('news', 'POST', {
+        page: n.page, icon: n.icon,
+        title: n.title, description: n.desc,
+        time_label: n.time
+      });
+    }
+    aiGeneratedNews = [];
+    await loadNews();
+    document.getElementById('ai-news-output').style.display = 'none';
+    showToast('✅ ' + total + ' news items saved!');
+  } catch(e) {
+    showToast('❌ Failed to save news', true);
+  }
+}
+
+async function aiGenerateAll() {
+  const btn = document.getElementById('ai-all-btn');
+  btn.textContent = '⏳ Generating everything...';
+  btn.disabled = true;
+  await new Promise(r => setTimeout(r, 200));
+  aiGeneratePredictions();
+  await new Promise(r => setTimeout(r, 1800));
+  aiGenerateNews();
+  btn.textContent = '⚡ Generate Everything At Once';
+  btn.disabled = false;
+  showToast('✅ Predictions & News generated! Review and save both.');
+}
+const savedUser = localStorage.getItem('realchi_user');
+if (savedUser) { try { currentUser = JSON.parse(savedUser); } catch(e) {} }
+updateAuthUI();
+loadPredictions();
+loadNews();
+</script>
+</body>
+</html>
